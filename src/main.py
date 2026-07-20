@@ -31,9 +31,9 @@ DESIGNED_CODE_LIMIT = 1800
 DEFAULT_SPAM_WINDOW_SECONDS = 8
 DEFAULT_BOT_LABEL = "@Decryptor2_bot"
 STATS_KEY = "usage_stats:v1"
-ENABLE_IMPORT_LINKS = False
-ENABLE_FULL_DETAILS_TXT = False
-SHOW_SENSITIVE_FIELDS = False
+ENABLE_IMPORT_LINKS = True
+ENABLE_FULL_DETAILS_TXT = True
+SHOW_SENSITIVE_FIELDS = True
 ENABLE_USAGE_STATS = False
 SPARKLES = "\u2728"
 PERSON_ICON = "\U0001f464"
@@ -1152,9 +1152,8 @@ def help_text() -> str:
         "- SSC Custom: <code>.ssc</code>\n\n"
         "Commands:\n"
         "- <code>/id</code> - your Telegram ID\n"
-        "- <code>/chatid</code> - current chat/group ID\n"
-        "- <code>/allowgroup</code> - owner only, enable full output in this group\n\n"
-        "Full output is available only in the owner's private chat or allowed groups."
+        "- <code>/chatid</code> - current chat/group ID\n\n"
+        "Full output is enabled for everyone who can use this bot."
     )
 
 
@@ -1473,7 +1472,7 @@ class Default(WorkerEntrypoint):
         if data == "supported":
             text = "Supported: .dark, .ehi, .hc, .ssc"
         elif data == "full_txt":
-            text = "Full raw TXT is disabled for safety."
+            text = "Full details TXT is sent automatically after each successful unlock."
         elif data == "raw_json":
             text = "Raw JSON is disabled for safety. The bot will send a safe preview."
         else:

@@ -16,5 +16,3 @@ services:
         value: "true"
       - key: OWNER_USER_IDS
         value: "5802122865"
-      - key: FULL_OUTPUT_CHAT_IDS
-        value: ""

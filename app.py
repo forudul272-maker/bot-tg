@@ -21,6 +21,7 @@ from main import (  # noqa: E402
     designed_message,
     fail_message,
     find_document,
+    format_result,
     help_text,
     important_preview,
     is_npv_file,
@@ -31,13 +32,13 @@ from main import (  # noqa: E402
     result_keyboard,
     result_note_from_result,
     run_decryptors,
+    safe_result_name,
     ssh_info_from_result,
     start_keyboard,
     v2ray_links_from_result,
 )
 
 app = Flask(__name__)
-RUNTIME_FULL_OUTPUT_CHAT_IDS: set[int] = set()
 OWNER_BUTTON = {"text": "Owner", "url": "https://t.me/Foridul_002"}
 COPY_CACHE: Dict[str, Dict[str, Any]] = {}
 
@@ -75,49 +76,33 @@ def is_owner(sender: Dict[str, Any]) -> bool:
     return isinstance(sender_id, int) and sender_id in owner_ids
 
 
-def is_full_output_chat(chat: Dict[str, Any]) -> bool:
-    chat_id = int_value(chat.get("id"))
-    if chat_id is None:
-        return False
-
-    configured_ids = parse_allowed_users(env_text("FULL_OUTPUT_CHAT_IDS"))
-    return chat_id in configured_ids or chat_id in RUNTIME_FULL_OUTPUT_CHAT_IDS
-
-
 def can_send_import_links(sender: Dict[str, Any], chat: Dict[str, Any]) -> bool:
-    if not env_bool("ENABLE_IMPORT_LINKS"):
+    if not env_bool("ENABLE_IMPORT_LINKS", True):
         return False
 
     return is_allowed_private_output(sender, chat)
 
 
 def can_send_sensitive_fields(sender: Dict[str, Any], chat: Dict[str, Any]) -> bool:
-    if not env_bool("SHOW_SENSITIVE_FIELDS"):
+    if not env_bool("SHOW_SENSITIVE_FIELDS", True):
         return False
 
     return is_allowed_private_output(sender, chat)
 
 
 def is_allowed_private_output(sender: Dict[str, Any], chat: Dict[str, Any]) -> bool:
-    if not is_owner(sender):
-        return False
-
-    if chat.get("type") == "private":
-        return True
-
-    return is_full_output_chat(chat)
+    return True
 
 
 def full_output_status_line(sender: Dict[str, Any], chat: Dict[str, Any]) -> str:
     chat_id = chat.get("id") or "unknown"
     chat_type = chat.get("type") or "unknown"
-    owner_status = "yes" if is_owner(sender) else "no"
     enabled_status = "yes" if is_allowed_private_output(sender, chat) else "no"
     return (
         f"Chat ID: {chat_id}\n"
         f"Chat type: {chat_type}\n"
-        f"Owner matched: {owner_status}\n"
-        f"Full output here: {enabled_status}"
+        f"Full output here: {enabled_status}\n"
+        "Full output scope: everyone"
     )
 
 
@@ -351,6 +336,32 @@ class TelegramClient:
         response.raise_for_status()
         return response.content
 
+    def send_document_text(
+        self,
+        chat_id: int,
+        file_name: str,
+        text: str,
+        caption: str,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "caption": caption,
+        }
+        if reply_to_message_id:
+            data["reply_to_message_id"] = reply_to_message_id
+            data["allow_sending_without_reply"] = "true"
+        files = {
+            "document": (
+                file_name,
+                text.encode("utf-8"),
+                "text/plain; charset=utf-8",
+            )
+        }
+        response = requests.post(f"{self.api_base}/sendDocument", data=data, files=files, timeout=60)
+        response.raise_for_status()
+        return response.json()
+
 
 @app.get("/")
 def health():
@@ -471,35 +482,8 @@ def handle_update(update: Dict[str, Any]) -> None:
     if command == "/chatid":
         client.send_message(int(chat_id), full_output_status_line(sender, chat))
         return
-    if command == "/allowgroup":
-        if not is_owner(sender):
-            client.send_message(int(chat_id), "Only the owner can use this command.")
-            return
-        if chat.get("type") == "private":
-            client.send_message(int(chat_id), "Run /allowgroup inside the group where you want full output.")
-            return
-        current_chat_id = int_value(chat_id)
-        if current_chat_id is not None:
-            RUNTIME_FULL_OUTPUT_CHAT_IDS.add(current_chat_id)
-        client.send_message(
-            int(chat_id),
-            "Full output is temporarily enabled in this group.\n"
-            "To make it permanent, add this Chat ID to the FULL_OUTPUT_CHAT_IDS environment variable.\n\n"
-            + full_output_status_line(sender, chat),
-        )
-        return
-    if command == "/denygroup":
-        if not is_owner(sender):
-            client.send_message(int(chat_id), "Only the owner can use this command.")
-            return
-        current_chat_id = int_value(chat_id)
-        if current_chat_id is not None:
-            RUNTIME_FULL_OUTPUT_CHAT_IDS.discard(current_chat_id)
-        client.send_message(
-            int(chat_id),
-            "Full output is disabled for this group in the current runtime.\n"
-            "To disable it permanently, remove this Chat ID from the FULL_OUTPUT_CHAT_IDS environment variable.",
-        )
+    if command in {"/allowgroup", "/denygroup"}:
+        client.send_message(int(chat_id), "Full output is already enabled for everyone.")
         return
     if command == "/fullstatus":
         client.send_message(int(chat_id), full_output_status_line(sender, chat))
@@ -630,6 +614,16 @@ def handle_update(update: Dict[str, Any]) -> None:
         reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
         reply_markup=action_result_keyboard(result, file_name, decryptor_name, sender, chat),
     )
+    try:
+        client.send_document_text(
+            int(chat_id),
+            safe_result_name(file_name, decryptor_name),
+            format_result(decryptor_title(decryptor_name), result),
+            f"FULL DETAILS | {decryptor_name}",
+            int(reply_to_message_id) if reply_to_message_id else None,
+        )
+    except Exception as exc:
+        print(f"full detail document failed: {exc}")
     send_owner_log(
         client,
         sender,
