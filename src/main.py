@@ -32,7 +32,7 @@ DEFAULT_SPAM_WINDOW_SECONDS = 8
 DEFAULT_BOT_LABEL = "@Decryptor2_bot"
 STATS_KEY = "usage_stats:v1"
 ENABLE_IMPORT_LINKS = True
-ENABLE_FULL_DETAILS_TXT = True
+ENABLE_FULL_DETAILS_TXT = False
 SHOW_SENSITIVE_FIELDS = True
 ENABLE_USAGE_STATS = False
 SPARKLES = "\u2728"
@@ -1472,7 +1472,7 @@ class Default(WorkerEntrypoint):
         if data == "supported":
             text = "Supported: .dark, .ehi, .hc, .ssc"
         elif data == "full_txt":
-            text = "Full details TXT is sent automatically after each successful unlock."
+            text = "Full details TXT is disabled."
         elif data == "raw_json":
             text = "Raw JSON is disabled for safety. The bot will send a safe preview."
         else:

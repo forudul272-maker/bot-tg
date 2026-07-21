@@ -16,23 +16,23 @@ from main import (  # noqa: E402
     DEFAULT_SPAM_WINDOW_SECONDS,
     LAST_USER_ACTION,
     chunk_for_html_code,
+    clean_action_text,
     decryptor_for_file,
     decryptor_title,
     designed_message,
     fail_message,
     find_document,
-    format_result,
     help_text,
     important_preview,
     is_npv_file,
     payload_from_result,
     parse_allowed_users,
     parse_positive_int,
+    preview_fields_from_result,
     requester_link,
     result_keyboard,
     result_note_from_result,
     run_decryptors,
-    safe_result_name,
     ssh_info_from_result,
     start_keyboard,
     v2ray_links_from_result,
@@ -216,27 +216,36 @@ def action_result_keyboard(
     chat: Dict[str, Any],
 ) -> Dict[str, Any]:
     chat_id = int_value(chat.get("id")) or 0
+    rows: list[list[Dict[str, Any]]] = []
 
     if can_send_import_links(sender, chat):
         links = v2ray_links_from_result(result, file_name, decryptor_name)
         if links:
-            return {
-                "inline_keyboard": [
-                    [copy_button("Copy V2RAY URL", links[0], chat_id, send_long_text_as_message=False)],
-                    [copy_button("Note", result_note_from_result(result, file_name, decryptor_name), chat_id), OWNER_BUTTON],
-                ]
-            }
+            rows.append([copy_button("Copy V2RAY", links[0], chat_id)])
 
     if can_send_sensitive_fields(sender, chat):
+        fields = preview_fields_from_result(result, decryptor_name)
         ssh_info = ssh_info_from_result(result, decryptor_name)
         payload = payload_from_result(result, decryptor_name)
-        if ssh_info or payload:
-            return {
-                "inline_keyboard": [
-                    [copy_button("Copy SSH info", ssh_info, chat_id)],
-                    [copy_button("Copy payload", payload, chat_id), OWNER_BUTTON],
-                ]
-            }
+        sni = clean_action_text(fields.get("sni"), 240)
+        uuid_text = clean_action_text(fields.get("uuid"), 240)
+
+        if ssh_info:
+            rows.append([copy_button("Copy SSH", ssh_info, chat_id)])
+        if payload:
+            rows.append([copy_button("Copy Payload", payload, chat_id)])
+
+        short_fields = []
+        if sni:
+            short_fields.append(copy_button("Copy SNI", sni, chat_id))
+        if uuid_text:
+            short_fields.append(copy_button("Copy UUID", uuid_text, chat_id))
+        if short_fields:
+            rows.append(short_fields)
+
+    if rows:
+        rows.append([copy_button("Copy Note", result_note_from_result(result, file_name, decryptor_name), chat_id), OWNER_BUTTON])
+        return {"inline_keyboard": rows}
 
     return result_keyboard()
 
@@ -335,33 +344,6 @@ class TelegramClient:
         response = requests.get(f"{self.file_base}/{file_path}", timeout=60)
         response.raise_for_status()
         return response.content
-
-    def send_document_text(
-        self,
-        chat_id: int,
-        file_name: str,
-        text: str,
-        caption: str,
-        reply_to_message_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        data: Dict[str, Any] = {
-            "chat_id": chat_id,
-            "caption": caption,
-        }
-        if reply_to_message_id:
-            data["reply_to_message_id"] = reply_to_message_id
-            data["allow_sending_without_reply"] = "true"
-        files = {
-            "document": (
-                file_name,
-                text.encode("utf-8"),
-                "text/plain; charset=utf-8",
-            )
-        }
-        response = requests.post(f"{self.api_base}/sendDocument", data=data, files=files, timeout=60)
-        response.raise_for_status()
-        return response.json()
-
 
 @app.get("/")
 def health():
@@ -614,16 +596,6 @@ def handle_update(update: Dict[str, Any]) -> None:
         reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
         reply_markup=action_result_keyboard(result, file_name, decryptor_name, sender, chat),
     )
-    try:
-        client.send_document_text(
-            int(chat_id),
-            safe_result_name(file_name, decryptor_name),
-            format_result(decryptor_title(decryptor_name), result),
-            f"FULL DETAILS | {decryptor_name}",
-            int(reply_to_message_id) if reply_to_message_id else None,
-        )
-    except Exception as exc:
-        print(f"full detail document failed: {exc}")
     send_owner_log(
         client,
         sender,
