@@ -44,10 +44,10 @@ LAST_USER_ACTION: dict[int, float] = {}
 USAGE_STATS_MEMORY: Dict[str, Any] = {}
 
 TITLE_BY_DECRYPTOR = {
-    "Dark Tunnel": "DARK TUNNEL DECRYPOR",
-    "HTTP Injector": "HTTP INJECTOR DECRYPOR",
-    "HTTP Custom": "HTTP CUSTOM DECRYPOR",
-    "SSC Custom": "SSC CUSTOM DECRYPOR",
+    "Dark Tunnel": "DARK TUNNEL DECRYPTOR",
+    "HTTP Injector": "HTTP INJECTOR DECRYPTOR",
+    "HTTP Custom": "HTTP CUSTOM DECRYPTOR",
+    "SSC Custom": "SSC CUSTOM DECRYPTOR",
 }
 
 DECRYPTORS = (
@@ -193,7 +193,7 @@ def ordered_decryptors_for(file_bytes: bytes, file_name: str) -> Tuple[Dict[str,
 
 
 def decryptor_title(decryptor_name: str) -> str:
-    return TITLE_BY_DECRYPTOR.get(decryptor_name, f"{decryptor_name.upper()} DECRYPOR")
+    return TITLE_BY_DECRYPTOR.get(decryptor_name, f"{decryptor_name.upper()} DECRYPTOR")
 
 
 def file_format_label(file_name: str, decryptor_name: str = "") -> str:
@@ -786,41 +786,47 @@ def server_information(preview: str, decryptor_name: str) -> str:
     data = preview_object(preview, decryptor_name)
     lines: list[str] = []
 
-    def add_line(icon_label: str, key: str, value: Any) -> None:
+    def add_line(icon: str, label: str, key: str, value: Any) -> None:
         if is_empty_output_value(value):
             return
-        lines.append(f"{icon_label:<12} ➜ {readable_preview_value(key, value)}")
+        text = readable_preview_value(key, value)
+        escaped = html.escape(text, quote=False)
+        block_keys = {"server", "host", "proxy", "sni", "path", "uuid", "payload", "details"}
+        if key in block_keys or len(text) > 34:
+            lines.append(f"{icon} <b>{label}</b>\n<code>{escaped}</code>")
+        else:
+            lines.append(f"{icon} <b>{label}</b>  <code>{escaped}</code>")
 
-    add_line("📦 App", "app", data.get("app") or decryptor_name)
-    add_line("📡 Type", "type", data.get("type") or data.get("protocol"))
-    add_line("📝 Name", "name", data.get("name"))
+    add_line("📦", "App", "app", data.get("app") or decryptor_name)
+    add_line("📡", "Type", "type", data.get("type") or data.get("protocol"))
+    add_line("📝", "Name", "name", data.get("name"))
 
     server_value = data.get("server")
     if not is_empty_output_value(server_value):
-        add_line("🌍 IP" if is_ip_address(server_value) else "🌍 Server", "server", server_value)
+        add_line("🌍", "IP" if is_ip_address(server_value) else "Server", "server", server_value)
 
-    add_line("☁️ Host", "host", data.get("host"))
-    add_line("🔌 Port", "port", data.get("port"))
+    add_line("☁️", "Host", "host", data.get("host"))
+    add_line("🔌", "Port", "port", data.get("port"))
 
     proxy_value = data.get("proxy")
     proxy_host = data.get("proxy_host")
     proxy_port = data.get("proxy_port")
     if is_empty_output_value(proxy_value) and not is_empty_output_value(proxy_host):
         proxy_value = f"{one_line_value(proxy_host)}:{one_line_value(proxy_port)}" if not is_empty_output_value(proxy_port) else proxy_host
-    add_line("🧩 Proxy", "proxy", proxy_value)
+    add_line("🧩", "Proxy", "proxy", proxy_value)
 
-    add_line("🛡 SNI", "sni", data.get("sni"))
-    add_line("🛰 Network", "network", data.get("network"))
-    add_line("📂 Path", "path", data.get("path"))
-    add_line("🔐 Security", "security", data.get("security") or data.get("encryption"))
-    add_line("🆔 UUID", "uuid", data.get("uuid"))
-    add_line("👥 Username", "username", data.get("username"))
-    add_line("🔑 Password", "password", data.get("password"))
-    add_line("📨 Payload", "payload", data.get("payload"))
+    add_line("🛡", "SNI", "sni", data.get("sni"))
+    add_line("🛰", "Network", "network", data.get("network"))
+    add_line("📂", "Path", "path", data.get("path"))
+    add_line("🔐", "Security", "security", data.get("security") or data.get("encryption"))
+    add_line("🆔", "UUID", "uuid", data.get("uuid"))
+    add_line("👥", "Username", "username", data.get("username"))
+    add_line("🔑", "Password", "password", data.get("password"))
+    add_line("📨", "Payload", "payload", data.get("payload"))
 
     details = data.get("details")
     if len(lines) <= 1 and not is_empty_output_value(details):
-        add_line("📄 Details", "details", details)
+        add_line("📄", "Details", "details", details)
 
     return "\n".join(lines)
 
@@ -1124,21 +1130,20 @@ def designed_message(
     prefer_second_chunk: bool = False,
 ) -> str:
     requester_text = plain_html_text(requester) or "USER"
-    section_line = "━" * 30
+    section_line = "━━━━━━━━━━━━━━━━━━━━"
     server_info = server_information(preview, title)
     return (
-        "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-        "┃       🔓 DECRYPTOR BOT       ┃\n"
-        "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n"
-        "✅ <b>DECRYPT COMPLETED</b>\n\n"
-        f"👤 User      : <b>{html.escape(requester_text)}</b>\n"
-        f"🤖 Bot       : <b>{html.escape(bot_label)}</b>\n"
-        f"⚡ Time      : <b>{elapsed_ms} ms</b>\n"
-        "📊 Status    : <b>SUCCESS</b>\n\n"
+        "✅ <b>DECRYPT COMPLETED</b>\n"
         f"{section_line}\n"
-        f"🌐 <b>SERVER INFORMATION</b>\n"
+        f"🔓 <b>{html.escape(title)}</b>\n"
+        f"👤 <b>User</b>  <code>{html.escape(requester_text, quote=False)}</code>\n"
+        f"🤖 <b>Bot</b>   <code>{html.escape(bot_label, quote=False)}</code>\n"
+        f"⚡ <b>Time</b>  <code>{elapsed_ms} ms</code>\n"
+        "📊 <b>Status</b> <code>SUCCESS</code>\n\n"
+        "🌐 <b>SERVER INFORMATION</b>\n"
         f"{section_line}\n\n"
-        f"{html.escape(server_info, quote=False)}"
+        f"{server_info}\n\n"
+        "⬇️ <b>QUICK COPY</b>"
     )
 
 
