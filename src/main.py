@@ -932,7 +932,7 @@ def server_information(preview: str, decryptor_name: str) -> str:
     if len(lines) <= 1 and not is_empty_output_value(details):
         add_line("📄", "Details", "details", details)
 
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def first_dict(value: Any) -> Dict[str, Any]:
@@ -1240,7 +1240,7 @@ def designed_message(
     badges = result_quality_badges(data, title)
     badge_line = ""
     if badges:
-        badge_line = f"🏷 <b>Badges</b> <code>{html.escape(' • '.join(badges), quote=False)}</code>\n"
+        badge_line = f"🏷 <b>Badges</b> <code>{html.escape(' • '.join(badges), quote=False)}</code>\n\n"
     return (
         "✅ <b>DECRYPT COMPLETED</b>\n"
         f"{section_line}\n"
