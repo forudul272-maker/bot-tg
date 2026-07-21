@@ -1211,6 +1211,21 @@ def v2ray_links_message(links: list[str]) -> str:
     return "\n".join(parts)
 
 
+def ready_v2ray_links_section(links: Optional[list[str]]) -> str:
+    if not links:
+        return ""
+
+    parts = ["🔗 <b>READY V2RAY LINK</b>", "━━━━━━━━━━━━━━━━━━━━"]
+    for index, link in enumerate(links[:3], 1):
+        label = "Link" if len(links) == 1 else f"Link {index}"
+        parts.append(f"{label}\n<code>{html.escape(link, quote=False)}</code>")
+
+    if len(links) > 3:
+        parts.append(f"+{len(links) - 3} more link available in copy buttons.")
+
+    return "\n\n" + "\n\n".join(parts) + "\n\n"
+
+
 def config_json_preview(preview: str, decryptor_name: str) -> str:
     data = preview_object(preview, decryptor_name)
     v2ray_config = data.get("v2ray_config")
@@ -1232,6 +1247,7 @@ def designed_message(
     elapsed_ms: int,
     preview: str,
     prefer_second_chunk: bool = False,
+    ready_links: Optional[list[str]] = None,
 ) -> str:
     requester_text = plain_html_text(requester) or "USER"
     section_line = "━━━━━━━━━━━━━━━━━━━━"
@@ -1252,7 +1268,9 @@ def designed_message(
         f"{badge_line}"
         "🌐 <b>SERVER INFORMATION</b>\n"
         f"{section_line}\n\n"
-        f"{server_info}\n\n"
+        f"{server_info}"
+        f"{ready_v2ray_links_section(ready_links)}"
+        "\n\n"
         "⬇️ <b>QUICK COPY</b>"
     )
 
@@ -1467,6 +1485,7 @@ class TelegramClient:
         preview: str,
         prefer_second_chunk: bool = False,
         reply_to_message_id: Optional[int] = None,
+        ready_links: Optional[list[str]] = None,
     ) -> None:
         await self.send_message(
             chat_id,
@@ -1477,6 +1496,7 @@ class TelegramClient:
                 elapsed_ms,
                 preview,
                 prefer_second_chunk,
+                ready_links,
             ),
             parse_mode="HTML",
             reply_to_message_id=reply_to_message_id,
@@ -1782,6 +1802,7 @@ class Default(WorkerEntrypoint):
         bot_label = await client.get_bot_label()
         caption = f"DONE | {decryptor_name}"
         preview = important_preview(result, decryptor_name)
+        v2ray_links = v2ray_links_from_preview(preview, file_name, decryptor_name) if ENABLE_IMPORT_LINKS else []
         await record_usage(self.env, file_name, True, decryptor_name)
 
         try:
@@ -1795,6 +1816,7 @@ class Default(WorkerEntrypoint):
                 preview,
                 decryptor_name == "HTTP Injector",
                 int(reply_to_message_id) if reply_to_message_id else None,
+                v2ray_links,
             )
         except Exception as exc:
             print(f"designed message failed, falling back to text chunks: {exc}")
@@ -1815,17 +1837,6 @@ class Default(WorkerEntrypoint):
             decryptor_name,
             duplicate_window,
         )
-        v2ray_links = v2ray_links_from_preview(preview, file_name, decryptor_name) if ENABLE_IMPORT_LINKS else []
-        if v2ray_links:
-            try:
-                await client.send_message(
-                    int(chat_id),
-                    v2ray_links_message(v2ray_links),
-                    parse_mode="HTML",
-                    reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
-                )
-            except Exception as exc:
-                print(f"v2ray link message failed: {exc}")
         await client.safe_edit_message(
             int(chat_id),
             processing_message_id,

@@ -601,6 +601,7 @@ def handle_update(update: Dict[str, Any]) -> None:
         decryptor_name,
         can_send_sensitive_fields(sender, chat),
     )
+    ready_links = v2ray_links_from_result(result, file_name, decryptor_name) if can_send_import_links(sender, chat) else []
     client.send_message(
         int(chat_id),
         designed_message(
@@ -610,6 +611,7 @@ def handle_update(update: Dict[str, Any]) -> None:
             elapsed_ms,
             preview,
             decryptor_name == "HTTP Injector",
+            ready_links,
         ),
         parse_mode="HTML",
         reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
