@@ -10,6 +10,8 @@ services:
         value: "5242880"
       - key: SPAM_WINDOW_SECONDS
         value: "8"
+      - key: DUPLICATE_WINDOW_SECONDS
+        value: "600"
       - key: ENABLE_IMPORT_LINKS
         value: "true"
       - key: SHOW_SENSITIVE_FIELDS

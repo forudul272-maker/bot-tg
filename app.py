@@ -12,6 +12,7 @@ from flask import Flask, abort, jsonify, request
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from main import (  # noqa: E402
+    DEFAULT_DUPLICATE_WINDOW_SECONDS,
     DEFAULT_MAX_FILE_SIZE,
     DEFAULT_SPAM_WINDOW_SECONDS,
     LAST_USER_ACTION,
@@ -20,7 +21,9 @@ from main import (  # noqa: E402
     decryptor_for_file,
     decryptor_title,
     designed_message,
+    duplicate_file_message,
     fail_message,
+    file_digest,
     find_document,
     help_text,
     important_preview,
@@ -29,6 +32,8 @@ from main import (  # noqa: E402
     parse_allowed_users,
     parse_positive_int,
     preview_fields_from_result,
+    recent_duplicate_record,
+    remember_successful_file,
     requester_link,
     result_keyboard,
     result_note_from_result,
@@ -536,6 +541,20 @@ def handle_update(update: Dict[str, Any]) -> None:
 
     try:
         file_bytes = client.get_file_bytes(document["file_id"])
+        digest = file_digest(file_bytes)
+        duplicate_window = parse_positive_int(
+            env_text("DUPLICATE_WINDOW_SECONDS"),
+            DEFAULT_DUPLICATE_WINDOW_SECONDS,
+        )
+        duplicate = recent_duplicate_record(sender.get("id"), chat_id, digest, duplicate_window)
+        if duplicate:
+            client.edit_message(
+                int(chat_id),
+                processing_message_id,
+                duplicate_file_message(duplicate),
+                reply_markup=result_keyboard(),
+            )
+            return
         started_at = time.perf_counter()
         decryptor_name, result, errors, detected_name = run_decryptors(file_bytes, file_name)
         elapsed_ms = max(1, int((time.perf_counter() - started_at) * 1000))
@@ -595,6 +614,14 @@ def handle_update(update: Dict[str, Any]) -> None:
         parse_mode="HTML",
         reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
         reply_markup=action_result_keyboard(result, file_name, decryptor_name, sender, chat),
+    )
+    remember_successful_file(
+        sender.get("id"),
+        chat_id,
+        digest,
+        file_name,
+        decryptor_name,
+        duplicate_window,
     )
     send_owner_log(
         client,

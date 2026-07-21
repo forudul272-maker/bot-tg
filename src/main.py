@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import html
 import json
 import re
@@ -29,6 +30,7 @@ DEFAULT_MAX_FILE_SIZE = 5 * 1024 * 1024
 TELEGRAM_TEXT_LIMIT = 3900
 DESIGNED_CODE_LIMIT = 1800
 DEFAULT_SPAM_WINDOW_SECONDS = 8
+DEFAULT_DUPLICATE_WINDOW_SECONDS = 600
 DEFAULT_BOT_LABEL = "@Decryptor2_bot"
 STATS_KEY = "usage_stats:v1"
 ENABLE_IMPORT_LINKS = True
@@ -42,6 +44,7 @@ DROP_OUTPUT_KEY_PARTS = ("lockedappconfig",)
 NPV_EXTENSIONS = (".npv", ".npvt", ".npv.txt", ".npvt.txt")
 LAST_USER_ACTION: dict[int, float] = {}
 USAGE_STATS_MEMORY: Dict[str, Any] = {}
+DUPLICATE_RESULT_CACHE: Dict[str, Dict[str, Any]] = {}
 
 TITLE_BY_DECRYPTOR = {
     "Dark Tunnel": "DARK TUNNEL DECRYPTOR",
@@ -94,6 +97,71 @@ def parse_positive_int(raw_value: str, default: int) -> int:
     except Exception:
         return default
     return value if value > 0 else default
+
+
+def file_digest(file_bytes: bytes) -> str:
+    return hashlib.sha256(file_bytes).hexdigest()
+
+
+def duplicate_cache_key(sender_id: Any, chat_id: Any, digest: str) -> str:
+    return f"{sender_id or 'unknown'}:{chat_id or 'unknown'}:{digest}"
+
+
+def cleanup_duplicate_cache(now: float) -> None:
+    for key, item in list(DUPLICATE_RESULT_CACHE.items()):
+        expires_at = float(item.get("expires_at") or 0)
+        if expires_at <= now:
+            DUPLICATE_RESULT_CACHE.pop(key, None)
+
+
+def recent_duplicate_record(
+    sender_id: Any,
+    chat_id: Any,
+    digest: str,
+    window_seconds: int = DEFAULT_DUPLICATE_WINDOW_SECONDS,
+) -> Optional[Dict[str, Any]]:
+    now = time.time()
+    cleanup_duplicate_cache(now)
+    key = duplicate_cache_key(sender_id, chat_id, digest)
+    item = DUPLICATE_RESULT_CACHE.get(key)
+    if not item:
+        return None
+    if now - float(item.get("seen_at") or 0) > window_seconds:
+        DUPLICATE_RESULT_CACHE.pop(key, None)
+        return None
+    return item
+
+
+def remember_successful_file(
+    sender_id: Any,
+    chat_id: Any,
+    digest: str,
+    file_name: str,
+    decryptor_name: str,
+    window_seconds: int = DEFAULT_DUPLICATE_WINDOW_SECONDS,
+) -> None:
+    now = time.time()
+    cleanup_duplicate_cache(now)
+    while len(DUPLICATE_RESULT_CACHE) > 200:
+        DUPLICATE_RESULT_CACHE.pop(next(iter(DUPLICATE_RESULT_CACHE)))
+    DUPLICATE_RESULT_CACHE[duplicate_cache_key(sender_id, chat_id, digest)] = {
+        "file_name": file_name,
+        "decryptor_name": decryptor_name,
+        "seen_at": now,
+        "expires_at": now + window_seconds,
+    }
+
+
+def duplicate_file_message(record: Dict[str, Any]) -> str:
+    decryptor = str(record.get("decryptor_name") or "config")
+    file_name = str(record.get("file_name") or "this file")
+    return (
+        "♻️ Duplicate file detected\n\n"
+        f"You already unlocked this file recently.\n"
+        f"File: {file_name}\n"
+        f"Format: {decryptor}\n\n"
+        "Please use the previous result and copy buttons."
+    )
 
 
 def chunk_text(text: str, size: int = TELEGRAM_TEXT_LIMIT) -> Iterable[str]:
@@ -782,6 +850,42 @@ def preview_object(preview: str, decryptor_name: str = "") -> Dict[str, Any]:
     return {"app": decryptor_name, "details": parsed}
 
 
+def result_quality_badges(data: Dict[str, Any], decryptor_name: str) -> list[str]:
+    badges: list[str] = []
+
+    def add(label: str) -> None:
+        if label and label not in badges:
+            badges.append(label)
+
+    raw_type = " ".join(
+        str(data.get(key) or "")
+        for key in ("app", "type", "protocol", "network", "security", "encryption")
+    ).lower()
+    payload = str(data.get("payload") or "").lower()
+    port = str(data.get("port") or "")
+
+    if "ssh" in raw_type or data.get("username") or data.get("password"):
+        add("SSH")
+    if "vmess" in raw_type:
+        add("VMESS")
+    if "vless" in raw_type:
+        add("VLESS")
+    if "trojan" in raw_type:
+        add("TROJAN")
+    if "ws" in raw_type or "websocket" in raw_type or "upgrade: websocket" in payload:
+        add("WS")
+    if "tls" in raw_type or port == "443" or not is_empty_output_value(data.get("sni")):
+        add("TLS")
+    if not is_empty_output_value(data.get("proxy") or data.get("proxy_host")):
+        add("Proxy OK")
+    if not is_empty_output_value(data.get("payload")):
+        add("Payload")
+    if not badges and decryptor_name:
+        add(decryptor_name.replace(" DECRYPTOR", "").title())
+
+    return badges[:6]
+
+
 def server_information(preview: str, decryptor_name: str) -> str:
     data = preview_object(preview, decryptor_name)
     lines: list[str] = []
@@ -1132,6 +1236,11 @@ def designed_message(
     requester_text = plain_html_text(requester) or "USER"
     section_line = "━━━━━━━━━━━━━━━━━━━━"
     server_info = server_information(preview, title)
+    data = preview_object(preview, title)
+    badges = result_quality_badges(data, title)
+    badge_line = ""
+    if badges:
+        badge_line = f"🏷 <b>Badges</b> <code>{html.escape(' • '.join(badges), quote=False)}</code>\n"
     return (
         "✅ <b>DECRYPT COMPLETED</b>\n"
         f"{section_line}\n"
@@ -1140,6 +1249,7 @@ def designed_message(
         f"🤖 <b>Bot</b>   <code>{html.escape(bot_label, quote=False)}</code>\n"
         f"⚡ <b>Time</b>  <code>{elapsed_ms} ms</code>\n"
         "📊 <b>Status</b> <code>SUCCESS</code>\n\n"
+        f"{badge_line}"
         "🌐 <b>SERVER INFORMATION</b>\n"
         f"{section_line}\n\n"
         f"{server_info}\n\n"
@@ -1163,25 +1273,53 @@ def help_text() -> str:
 
 
 def fail_message(file_name: str, detected_name: Optional[str], errors: Tuple[str, ...]) -> str:
+    def technical_details(limit: int) -> str:
+        if not errors:
+            return ""
+        details = "\n".join(f"- {error}" for error in errors[-limit:])
+        return f"\n\nTechnical details:\n{details}"
+
+    def classify_failure() -> tuple[str, str]:
+        joined = " ".join(errors).lower()
+        if not errors:
+            return "Unsupported format", "Send a supported config file: .dark, .ehi, .hc, .ssc"
+        if any(word in joined for word in ("json", "decode", "utf", "base64", "padding", "truncated", "corrupt")):
+            return "Corrupted or incomplete file", "Download/export the config again, then resend it."
+        if any(word in joined for word in ("decrypt", "cipher", "mac check", "invalid", "key", "nonce")):
+            return "Decrypt key failed or config is locked", "This version may use a new lock method."
+        if any(word in joined for word in ("timeout", "too long", "memory", "argon")):
+            return "Heavy file or timeout", "Try a smaller file or resend after a moment."
+        if "format/version did not match" in joined:
+            return "Wrong format or unsupported version", "Check the file extension or send the original config file."
+        return "Unsupported/new config version", "Send another file or wait for this format to be added."
+
     if is_npv_file(file_name):
         return (
-            "NPV/NPVT file detected, but NPV support is currently disabled.\n\n"
-            "Please send a supported file: .dark, .ehi, .hc, .ssc"
+            "❌ Unlock failed\n\n"
+            f"File: {file_name}\n"
+            "Detected: NPV/NPVT\n"
+            "Reason: NPV support is currently disabled.\n"
+            "Next step: send a supported file: .dark, .ehi, .hc, .ssc"
         )
 
+    reason, next_step = classify_failure()
     if detected_name:
-        details = "\n".join(f"- {error}" for error in errors[-2:])
         return (
-            f"{detected_name} file detected, but it could not be unlocked.\n\n"
-            "Possible reason: new format, locked config, corrupt file, or unsupported version.\n"
-            f"{details}"
+            "❌ Unlock failed\n\n"
+            f"File: {file_name}\n"
+            f"Detected: {detected_name}\n"
+            f"Reason: {reason}\n"
+            f"Next step: {next_step}"
+            f"{technical_details(2)}"
         )
 
-    details = "\n".join(f"- {error}" for error in errors[-4:])
     return (
-        "This file was not detected as a supported format.\n\n"
+        "❌ Unsupported file\n\n"
+        f"File: {file_name}\n"
+        f"Reason: {reason}\n"
         "Supported: Dark Tunnel, HTTP Injector, HTTP Custom, SSC Custom.\n"
-        f"{details}"
+        f"Next step: {next_step}"
+        f"{technical_details(4)}"
     )
 
 
@@ -1605,6 +1743,19 @@ class Default(WorkerEntrypoint):
                 await client.send_message(int(chat_id), message_text)
             return
 
+        digest = file_digest(file_bytes)
+        duplicate_window = parse_positive_int(
+            env_text(self.env, "DUPLICATE_WINDOW_SECONDS"),
+            DEFAULT_DUPLICATE_WINDOW_SECONDS,
+        )
+        duplicate = recent_duplicate_record(sender_id, chat_id, digest, duplicate_window)
+        if duplicate:
+            message_text = duplicate_file_message(duplicate)
+            await client.safe_edit_message(int(chat_id), processing_message_id, message_text)
+            if not processing_message_id:
+                await client.send_message(int(chat_id), message_text)
+            return
+
         started_at = time.perf_counter()
         decryptor_name, result, errors, detected_name = run_decryptors(file_bytes, file_name)
         elapsed_ms = max(1, int((time.perf_counter() - started_at) * 1000))
@@ -1656,6 +1807,14 @@ class Default(WorkerEntrypoint):
                 int(chat_id),
                 display_result_chunk(preview, decryptor_name == "HTTP Injector"),
             )
+        remember_successful_file(
+            sender_id,
+            chat_id,
+            digest,
+            file_name,
+            decryptor_name,
+            duplicate_window,
+        )
         v2ray_links = v2ray_links_from_preview(preview, file_name, decryptor_name) if ENABLE_IMPORT_LINKS else []
         if v2ray_links:
             try:
