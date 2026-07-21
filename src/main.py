@@ -704,16 +704,16 @@ def v2ray_links_from_result(result: str, file_name: str, decryptor_name: str) ->
     links: list[str] = []
     name = v2ray_link_name(found, file_name)
 
+    fallback_link = v2ray_link_from_fields(found, name)
+    if fallback_link and fallback_link not in links:
+        links.append(fallback_link)
+
     v2ray_config = found.get("v2ray_config")
     if not is_empty_output_value(v2ray_config):
         for entry in v2ray_server_entries(v2ray_config):
             link = v2ray_link_from_entry(entry, name)
             if link and link not in links:
                 links.append(link)
-
-    fallback_link = v2ray_link_from_fields(found, name)
-    if fallback_link and fallback_link not in links:
-        links.append(fallback_link)
 
     return links
 
@@ -932,7 +932,7 @@ def server_information(preview: str, decryptor_name: str) -> str:
     if len(lines) <= 1 and not is_empty_output_value(details):
         add_line("📄", "Details", "details", details)
 
-    return "\n\n".join(lines)
+    return "\n".join(lines)
 
 
 def first_dict(value: Any) -> Dict[str, Any]:
@@ -1184,16 +1184,16 @@ def v2ray_links_from_preview(preview: str, file_name: str, decryptor_name: str) 
     links: list[str] = []
     name = v2ray_link_name(data, file_name)
 
+    fallback_link = v2ray_link_from_fields(data, name)
+    if fallback_link and fallback_link not in links:
+        links.append(fallback_link)
+
     v2ray_config = data.get("v2ray_config")
     if not is_empty_output_value(v2ray_config):
         for entry in v2ray_server_entries(v2ray_config):
             link = v2ray_link_from_entry(entry, name)
             if link and link not in links:
                 links.append(link)
-
-    fallback_link = v2ray_link_from_fields(data, name)
-    if fallback_link and fallback_link not in links:
-        links.append(fallback_link)
 
     return links
 
@@ -1215,15 +1215,13 @@ def ready_v2ray_links_section(links: Optional[list[str]]) -> str:
     if not links:
         return ""
 
-    parts = ["🔗 <b>READY V2RAY LINK</b>", "━━━━━━━━━━━━━━━━━━━━"]
-    for index, link in enumerate(links[:3], 1):
-        label = "Link" if len(links) == 1 else f"Link {index}"
-        parts.append(f"{label}\n<code>{html.escape(link, quote=False)}</code>")
-
-    if len(links) > 3:
-        parts.append(f"+{len(links) - 3} more link available in copy buttons.")
-
-    return "\n\n" + "\n\n".join(parts) + "\n\n"
+    link = links[0]
+    return (
+        "\n\n"
+        "🔗 <b>READY V2RAY LINK</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"<code>{html.escape(link, quote=False)}</code>"
+    )
 
 
 def config_json_preview(preview: str, decryptor_name: str) -> str:
@@ -1256,7 +1254,7 @@ def designed_message(
     badges = result_quality_badges(data, title)
     badge_line = ""
     if badges:
-        badge_line = f"🏷 <b>Badges</b> <code>{html.escape(' • '.join(badges), quote=False)}</code>\n\n"
+        badge_line = f"🏷 <b>Badges</b> <code>{html.escape(' • '.join(badges), quote=False)}</code>\n"
     return (
         "✅ <b>DECRYPT COMPLETED</b>\n"
         f"{section_line}\n"
