@@ -652,6 +652,7 @@ def important_preview(
         )
 
     found = preview_fields_from_result(result, decryptor_name)
+    apply_v2ray_server_fields(found)
 
     if len(found) <= 1:
         return json.dumps(
@@ -704,16 +705,16 @@ def v2ray_links_from_result(result: str, file_name: str, decryptor_name: str) ->
     links: list[str] = []
     name = v2ray_link_name(found, file_name)
 
-    fallback_link = v2ray_link_from_fields(found, name)
-    if fallback_link and fallback_link not in links:
-        links.append(fallback_link)
-
     v2ray_config = found.get("v2ray_config")
     if not is_empty_output_value(v2ray_config):
         for entry in v2ray_server_entries(v2ray_config):
             link = v2ray_link_from_entry(entry, name)
             if link and link not in links:
                 links.append(link)
+
+    fallback_link = v2ray_link_from_fields(found, name)
+    if not links and fallback_link:
+        links.append(fallback_link)
 
     return links
 
@@ -1090,6 +1091,58 @@ def v2ray_server_preview(v2ray_config: Any) -> Optional[Dict[str, Any]]:
     return {"servers": entries}
 
 
+def preferred_v2ray_entry(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    v2ray_config = data.get("v2ray_config")
+    if is_empty_output_value(v2ray_config):
+        return None
+
+    for entry in v2ray_server_entries(v2ray_config):
+        protocol = str(entry.get("protocol") or "").strip().lower()
+        address = entry.get("address") or entry.get("server")
+        if (
+            protocol in {"vless", "vmess", "trojan"}
+            and not is_empty_output_value(address)
+            and clean_port(entry.get("port"))
+        ):
+            return entry
+
+    return None
+
+
+def first_present(*values: Any) -> Any:
+    for value in values:
+        if not is_empty_output_value(value):
+            return value
+    return None
+
+
+def apply_v2ray_server_fields(data: Dict[str, Any]) -> None:
+    entry = preferred_v2ray_entry(data)
+    if not entry:
+        return
+
+    replacements = {
+        "type": entry.get("protocol"),
+        "protocol": entry.get("protocol"),
+        "server": first_present(entry.get("address"), entry.get("server")),
+        "host": entry.get("host"),
+        "port": entry.get("port"),
+        "sni": entry.get("serverName"),
+        "network": entry.get("network"),
+        "path": entry.get("path"),
+        "security": first_present(
+            entry.get("tls"),
+            entry.get("security"),
+            entry.get("encryption"),
+        ),
+        "uuid": first_present(entry.get("id"), entry.get("uuid")),
+        "password": entry.get("password"),
+    }
+    for key, value in replacements.items():
+        if not is_empty_output_value(value):
+            data[key] = value
+
+
 def query_pairs(params: Dict[str, Any]) -> str:
     pairs = []
     for key, value in params.items():
@@ -1184,16 +1237,16 @@ def v2ray_links_from_preview(preview: str, file_name: str, decryptor_name: str) 
     links: list[str] = []
     name = v2ray_link_name(data, file_name)
 
-    fallback_link = v2ray_link_from_fields(data, name)
-    if fallback_link and fallback_link not in links:
-        links.append(fallback_link)
-
     v2ray_config = data.get("v2ray_config")
     if not is_empty_output_value(v2ray_config):
         for entry in v2ray_server_entries(v2ray_config):
             link = v2ray_link_from_entry(entry, name)
             if link and link not in links:
                 links.append(link)
+
+    fallback_link = v2ray_link_from_fields(data, name)
+    if not links and fallback_link:
+        links.append(fallback_link)
 
     return links
 
@@ -1800,7 +1853,7 @@ class Default(WorkerEntrypoint):
         bot_label = await client.get_bot_label()
         caption = f"DONE | {decryptor_name}"
         preview = important_preview(result, decryptor_name)
-        v2ray_links = v2ray_links_from_preview(preview, file_name, decryptor_name) if ENABLE_IMPORT_LINKS else []
+        v2ray_links = v2ray_links_from_result(result, file_name, decryptor_name) if ENABLE_IMPORT_LINKS else []
         await record_usage(self.env, file_name, True, decryptor_name)
 
         try:
