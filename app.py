@@ -81,6 +81,42 @@ def is_owner(sender: Dict[str, Any]) -> bool:
     return isinstance(sender_id, int) and sender_id in owner_ids
 
 
+def is_channel_member(client: "TelegramClient", user_id: int) -> bool:
+    if not env_bool("FORCE_SUB_ENABLED", True):
+        return True
+    channel_id = env_text("REQUIRED_CHANNEL", "@internetfor_al")
+    if not channel_id:
+        return True
+    try:
+        res = client.call("getChatMember", {"chat_id": channel_id, "user_id": user_id})
+        status = res.get("result", {}).get("status", "")
+        return status in {"creator", "administrator", "member", "restricted"}
+    except Exception as exc:
+        print(f"Channel membership check failed for user {user_id} on {channel_id}: {exc}")
+        return False
+
+
+def verify_required_message() -> str:
+    channel_name = env_text("REQUIRED_CHANNEL", "@internetfor_al")
+    return (
+        "⚠️ <b>Access Required / চ্যানেল জয়েন আবশ্যক</b>\n\n"
+        "বটটি ব্যবহার করার জন্য আপনাকে প্রথমে আমাদের অফিসিয়াল চ্যানেলে জয়েন করতে হবে।\n\n"
+        f"📢 চ্যানেল: <b>{html.escape(channel_name)}</b>\n\n"
+        "👉 নিচের <b>'📢 Join Channel'</b> বাটনে চাপ দিয়ে জয়েন করুন, তারপর <b>'✅ Verify'</b> বাটনে চাপ দিন।"
+    )
+
+
+def verify_keyboard() -> Dict[str, Any]:
+    channel_url = env_text("REQUIRED_CHANNEL_URL", "https://t.me/internetfor_al")
+    return {
+        "inline_keyboard": [
+            [{"text": "📢 Join Channel / চ্যানেলে যুক্ত হোন", "url": channel_url}],
+            [{"text": "✅ Verify / যাচাই করুন", "callback_data": "verify_channel"}],
+            [OWNER_BUTTON],
+        ]
+    }
+
+
 def can_send_import_links(sender: Dict[str, Any], chat: Dict[str, Any]) -> bool:
     if not env_bool("ENABLE_IMPORT_LINKS", True):
         return False
@@ -394,6 +430,46 @@ def handle_callback(client: TelegramClient, callback_query: Dict[str, Any]) -> N
     message = callback_query.get("message") or {}
     chat = message.get("chat") if isinstance(message, dict) else {}
     chat_id = chat.get("id") if isinstance(chat, dict) else None
+    sender = callback_query.get("from") or {}
+    sender_id = sender.get("id")
+
+    if data == "verify_channel":
+        if not isinstance(sender_id, int):
+            if query_id:
+                client.answer_callback_query(query_id, "Could not identify user.", show_alert=True)
+            return
+
+        if is_owner(sender) or is_channel_member(client, sender_id):
+            if query_id:
+                client.answer_callback_query(query_id, "✅ ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
+            message_id = message.get("message_id") if isinstance(message, dict) else None
+            success_text = (
+                "🎉 <b>ভেরিফিকেশন সম্পন্ন হয়েছে!</b>\n\n"
+                "বটে আপনাকে স্বাগতম! আপনি এখন কনফিগ ফাইল (.ehi, .hc, .dark, .ssc) পাঠাতে পারেন।"
+            )
+            if message_id and chat_id:
+                client.edit_message(
+                    int(chat_id),
+                    int(message_id),
+                    success_text,
+                    reply_markup=start_keyboard(),
+                )
+            elif chat_id:
+                client.send_message(
+                    int(chat_id),
+                    success_text,
+                    parse_mode="HTML",
+                    reply_markup=start_keyboard(),
+                )
+            return
+        else:
+            if query_id:
+                client.answer_callback_query(
+                    query_id,
+                    "❌ আপনি এখনো চ্যানেলে জয়েন করেননি! আগে চ্যানেলে জয়েন করে আবার ভেরিফাই বাটনে চাপ দিন।",
+                    show_alert=True,
+                )
+            return
 
     if data.startswith("copy:"):
         item = COPY_CACHE.get(data.split(":", 1)[1])
@@ -458,6 +534,18 @@ def handle_update(update: Dict[str, Any]) -> None:
     if allowed_users and sender.get("id") not in allowed_users:
         client.send_message(int(chat_id), "Sorry, this bot is private.")
         return
+
+    # Check Channel Membership (Owner bypasses)
+    sender_id = sender.get("id")
+    if isinstance(sender_id, int) and not is_owner(sender):
+        if not is_channel_member(client, sender_id):
+            client.send_message(
+                int(chat_id),
+                verify_required_message(),
+                parse_mode="HTML",
+                reply_markup=verify_keyboard(),
+            )
+            return
 
     if command == "/start" or command == "/help":
         client.send_message(int(chat_id), help_text(), parse_mode="HTML", reply_markup=start_keyboard())

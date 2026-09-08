@@ -414,6 +414,7 @@ def result_keyboard() -> Dict[str, Any]:
 def start_keyboard() -> Dict[str, Any]:
     return {
         "inline_keyboard": [
+            [{"text": "📢 Official Channel", "url": "https://t.me/internetfor_al"}],
             [{"text": "Owner", "url": "https://t.me/Foridul_002"}],
             [{"text": "Supported Formats", "callback_data": "supported"}],
         ]
