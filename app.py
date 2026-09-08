@@ -99,10 +99,10 @@ def is_channel_member(client: "TelegramClient", user_id: int) -> bool:
 def verify_required_message() -> str:
     channel_name = env_text("REQUIRED_CHANNEL", "@internetfor_al")
     return (
-        "⚠️ <b>Access Required / চ্যানেল জয়েন আবশ্যক</b>\n\n"
-        "বটটি ব্যবহার করার জন্য আপনাকে প্রথমে আমাদের অফিসিয়াল চ্যানেলে জয়েন করতে হবে।\n\n"
-        f"📢 চ্যানেল: <b>{html.escape(channel_name)}</b>\n\n"
-        "👉 নিচের <b>'📢 Join Channel'</b> বাটনে চাপ দিয়ে জয়েন করুন, তারপর <b>'✅ Verify'</b> বাটনে চাপ দিন।"
+        "⚠️ <b>Access Required</b>\n\n"
+        "To use this bot, you must join our official Telegram channel first.\n\n"
+        f"📢 Channel: <b>{html.escape(channel_name)}</b>\n\n"
+        "👉 Click <b>'📢 Join Channel'</b> below to join, then click <b>'✅ Verify'</b> to continue."
     )
 
 
@@ -110,8 +110,8 @@ def verify_keyboard() -> Dict[str, Any]:
     channel_url = env_text("REQUIRED_CHANNEL_URL", "https://t.me/internetfor_al")
     return {
         "inline_keyboard": [
-            [{"text": "📢 Join Channel / চ্যানেলে যুক্ত হোন", "url": channel_url}],
-            [{"text": "✅ Verify / যাচাই করুন", "callback_data": "verify_channel"}],
+            [{"text": "📢 Join Channel", "url": channel_url}],
+            [{"text": "✅ Verify", "callback_data": "verify_channel"}],
             [OWNER_BUTTON],
         ]
     }
@@ -441,11 +441,11 @@ def handle_callback(client: TelegramClient, callback_query: Dict[str, Any]) -> N
 
         if is_owner(sender) or is_channel_member(client, sender_id):
             if query_id:
-                client.answer_callback_query(query_id, "✅ ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
+                client.answer_callback_query(query_id, "✅ Verification successful!", show_alert=True)
             message_id = message.get("message_id") if isinstance(message, dict) else None
             success_text = (
-                "🎉 <b>ভেরিফিকেশন সম্পন্ন হয়েছে!</b>\n\n"
-                "বটে আপনাকে স্বাগতম! আপনি এখন কনফিগ ফাইল (.ehi, .hc, .dark, .ssc) পাঠাতে পারেন।"
+                "🎉 <b>Verification Successful!</b>\n\n"
+                "Welcome to the bot! You can now send your config files (.ehi, .hc, .dark, .ssc)."
             )
             if message_id and chat_id:
                 client.edit_message(
@@ -466,7 +466,7 @@ def handle_callback(client: TelegramClient, callback_query: Dict[str, Any]) -> N
             if query_id:
                 client.answer_callback_query(
                     query_id,
-                    "❌ আপনি এখনো চ্যানেলে জয়েন করেননি! আগে চ্যানেলে জয়েন করে আবার ভেরিফাই বাটনে চাপ দিন।",
+                    "❌ You have not joined the channel yet! Please join first and click Verify.",
                     show_alert=True,
                 )
             return
