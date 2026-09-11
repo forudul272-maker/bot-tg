@@ -1,6 +1,6 @@
-Flask==3.0.3
-gunicorn==22.0.0
-requests==2.32.3
-pycryptodome==3.21.0
-msgpack==1.1.1
-argon2-cffi==25.1.0
+flask
+pyTelegramBotAPI
+requests
+dnspython
+gunicorn
+urllib3

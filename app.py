@@ -1,731 +1,324 @@
-import html
+#!/usr/bin/env python3
+# ══════════════════════════════════════════════════════════════════════════════
+#  🔍 FORIDUL DOMAIN FINDER & BUG HUNTER BOT v1.0 (RENDER + FLASK WEBHOOK)
+# ══════════════════════════════════════════════════════════════════════════════
+
 import os
-import sys
-import time
-import uuid
-from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlparse
+import re
+import socket
+import ssl
+import logging
+from io import BytesIO
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import telebot
+from telebot import types
 import requests
-from flask import Flask, abort, jsonify, request
+import dns.resolver
+from flask import Flask, request, jsonify
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+# ──────────────────────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ──────────────────────────────────────────────────────────────────────────────
+BOT_TOKEN = os.environ.get("DOMAIN_BOT_TOKEN", "8877299023:AAGe7VgeDeiF8r_H1AutS5_7fA9Lkc_k1ao")
+ADMIN_IDS = [int(x) for x in os.environ.get("DOMAIN_BOT_ADMINS", "5802122865").split(",")]
+WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://bot-tg-8ms7.onrender.com")
 
-from main import (  # noqa: E402
-    DEFAULT_DUPLICATE_WINDOW_SECONDS,
-    DEFAULT_MAX_FILE_SIZE,
-    DEFAULT_SPAM_WINDOW_SECONDS,
-    LAST_USER_ACTION,
-    chunk_for_html_code,
-    clean_action_text,
-    decryptor_for_file,
-    decryptor_title,
-    designed_message,
-    duplicate_file_message,
-    fail_message,
-    file_digest,
-    find_document,
-    help_text,
-    important_preview,
-    is_npv_file,
-    payload_from_result,
-    parse_allowed_users,
-    parse_positive_int,
-    preview_fields_from_result,
-    recent_duplicate_record,
-    remember_successful_file,
-    requester_link,
-    result_keyboard,
-    result_note_from_result,
-    run_decryptors,
-    ssh_info_from_result,
-    start_keyboard,
-    v2ray_links_from_result,
-)
+MAX_WORKERS = 20
+REQUEST_TIMEOUT = 8
+VERSION = "1.0.0"
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("DomainBot")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BOT INIT
+# ──────────────────────────────────────────────────────────────────────────────
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 app = Flask(__name__)
-OWNER_BUTTON = {"text": "Owner", "url": "https://t.me/Foridul_002"}
-COPY_CACHE: Dict[str, Dict[str, Any]] = {}
+user_states = {}
 
+# Databases
+SOCIAL_DOMAINS = {"facebook.com", "fbcdn.net", "fbsbx.com", "fb.com", "fb.me", "instagram.com", "whatsapp.com", "messenger.com", "snapchat.com", "tiktok.com", "twitter.com", "linkedin.com", "reddit.com"}
+CHAT_DOMAINS = {"telegram.org", "t.me", "viber.com", "signal.org", "wechat.com", "discord.com", "slack.com", "skype.com", "zoom.us"}
+RIDE_DOMAINS = {"uber.com", "pathao.com", "obhai.com", "shohoz.com", "foodpanda.com"}
+VIDEO_DOMAINS = {"youtube.com", "netflix.com", "vimeo.com", "twitch.tv", "toffee.com.bd"}
+GAMING_DOMAINS = {"freefire.com", "garena.com", "pubgmobile.com", "epicgames.com", "steampowered.com", "ea.com", "supercell.com"}
 
-def env_text(name: str, default: str = "") -> str:
-    return os.environ.get(name, default) or ""
+CDN_PROVIDERS = {
+    "cloudflare": ["cloudflare", "cf-ray"],
+    "akamai": ["akamai", "akamaized"],
+    "cloudfront": ["cloudfront", "amzn"],
+    "fastly": ["fastly"],
+    "google": ["gstatic", "google"],
+    "facebook": ["fbcdn", "facebook"],
+}
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  CORE SCANNING ENGINES (same as before)
+# ══════════════════════════════════════════════════════════════════════════════
 
-def bot_token() -> str:
-    token = env_text("BOT_TOKEN")
-    if not token:
-        raise RuntimeError("BOT_TOKEN missing")
-    return token
-
-
-def env_bool(name: str, default: bool = False) -> bool:
-    value = env_text(name)
-    if not value:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def int_value(value: Any) -> Optional[int]:
+def find_subdomains_crtsh(domain):
+    subs = set()
     try:
-        return int(value)
-    except Exception:
-        return None
+        r = requests.get(f"https://crt.sh/?q=%.{domain}&output=json", timeout=15)
+        if r.status_code == 200:
+            for entry in r.json():
+                name = entry.get("name_value", "")
+                for line in name.split("\n"):
+                    line = line.strip().lower()
+                    if line.endswith(domain) and "*" not in line:
+                        subs.add(line)
+    except: pass
+    return subs
 
-
-def is_owner(sender: Dict[str, Any]) -> bool:
-    owner_ids = parse_allowed_users(env_text("OWNER_USER_IDS"))
-    if not owner_ids:
-        owner_ids = parse_allowed_users(env_text("ALLOWED_USER_IDS"))
-    sender_id = sender.get("id")
-    return isinstance(sender_id, int) and sender_id in owner_ids
-
-
-def is_channel_member(client: "TelegramClient", user_id: int) -> bool:
-    if not env_bool("FORCE_SUB_ENABLED", True):
-        return True
-    channel_id = env_text("REQUIRED_CHANNEL", "@internetfor_al")
-    if not channel_id:
-        return True
+def find_subdomains_hackertarget(domain):
+    subs = set()
     try:
-        res = client.call("getChatMember", {"chat_id": channel_id, "user_id": user_id})
-        status = res.get("result", {}).get("status", "")
-        return status in {"creator", "administrator", "member", "restricted"}
-    except Exception as exc:
-        print(f"Channel membership check failed for user {user_id} on {channel_id}: {exc}")
-        return False
+        r = requests.get(f"https://api.hackertarget.com/hostsearch/?q={domain}", timeout=10)
+        if r.status_code == 200 and "error" not in r.text.lower():
+            for line in r.text.strip().split("\n"):
+                parts = line.split(",")
+                if parts and parts[0].strip().endswith(domain):
+                    subs.add(parts[0].strip().lower())
+    except: pass
+    return subs
 
+def find_subdomains_rapiddns(domain):
+    subs = set()
+    try:
+        r = requests.get(f"https://rapiddns.io/subdomain/{domain}?full=1", timeout=10)
+        if r.status_code == 200:
+            for m in re.findall(r'<td>([a-zA-Z0-9._-]+\.' + re.escape(domain) + r')</td>', r.text):
+                subs.add(m.strip().lower())
+    except: pass
+    return subs
 
-def verify_required_message() -> str:
-    channel_name = env_text("REQUIRED_CHANNEL", "@internetfor_al")
-    return (
-        "⚠️ <b>Access Required</b>\n\n"
-        "To use this bot, you must join our official Telegram channel first.\n\n"
-        f"📢 Channel: <b>{html.escape(channel_name)}</b>\n\n"
-        "👉 Click <b>'📢 Join Channel'</b> below to join, then click <b>'✅ Verify'</b> to continue."
-    )
+def check_domain_live(domain):
+    try:
+        answers = dns.resolver.resolve(domain, "A", lifetime=5)
+        return {"domain": domain, "live": True, "ips": [r.to_text() for r in answers]}
+    except:
+        return {"domain": domain, "live": False, "ips": []}
 
+def check_http_status(domain):
+    res = {"status_code": None, "server": "Unknown", "cdn": None, "redirect": None, "error": None}
+    try:
+        r = requests.get(f"https://{domain}", timeout=REQUEST_TIMEOUT, allow_redirects=False, verify=False)
+        res["status_code"] = r.status_code
+        res["server"] = r.headers.get("Server", "Unknown")
+        res["redirect"] = r.headers.get("Location", "")
+        all_h = str(r.headers).lower()
+        for cdn, kws in CDN_PROVIDERS.items():
+            if any(kw in all_h for kw in kws):
+                res["cdn"] = cdn.title()
+                break
+        if "cf-ray" in r.headers: res["cdn"] = "Cloudflare"
+    except Exception as e:
+        res["error"] = str(e)[:50]
+    return res
 
-def verify_keyboard() -> Dict[str, Any]:
-    channel_url = env_text("REQUIRED_CHANNEL_URL", "https://t.me/internetfor_al")
-    return {
-        "inline_keyboard": [
-            [{"text": "📢 Join Channel", "url": channel_url}],
-            [{"text": "✅ Verify", "callback_data": "verify_channel"}],
-            [OWNER_BUTTON],
-        ]
-    }
-
-
-def can_send_import_links(sender: Dict[str, Any], chat: Dict[str, Any]) -> bool:
-    if not env_bool("ENABLE_IMPORT_LINKS", True):
-        return False
-
-    return is_allowed_private_output(sender, chat)
-
-
-def can_send_sensitive_fields(sender: Dict[str, Any], chat: Dict[str, Any]) -> bool:
-    if not env_bool("SHOW_SENSITIVE_FIELDS", True):
-        return False
-
-    return is_allowed_private_output(sender, chat)
-
-
-def is_allowed_private_output(sender: Dict[str, Any], chat: Dict[str, Any]) -> bool:
-    return True
-
-
-def full_output_status_line(sender: Dict[str, Any], chat: Dict[str, Any]) -> str:
-    chat_id = chat.get("id") or "unknown"
-    chat_type = chat.get("type") or "unknown"
-    enabled_status = "yes" if is_allowed_private_output(sender, chat) else "no"
-    return (
-        f"Chat ID: {chat_id}\n"
-        f"Chat type: {chat_type}\n"
-        f"Full output here: {enabled_status}\n"
-        "Full output scope: everyone"
-    )
-
-
-def sender_label(sender: Dict[str, Any]) -> str:
-    user_id = sender.get("id") or "unknown"
-    username = sender.get("username")
-    if username:
-        return f"@{username} ({user_id})"
-
-    parts = [str(sender.get("first_name") or ""), str(sender.get("last_name") or "")]
-    name = " ".join(part for part in parts if part).strip()
-    return f"{name or 'Unknown'} ({user_id})"
-
-
-def chat_label(chat: Dict[str, Any]) -> str:
-    chat_id = chat.get("id") or "unknown"
-    chat_type = chat.get("type") or "unknown"
-    title = chat.get("title") or chat.get("username") or ""
-    suffix = f" | {title}" if title else ""
-    return f"{chat_type} ({chat_id}){suffix}"
-
-
-def short_log_errors(errors: tuple[str, ...]) -> str:
-    if not errors:
-        return "-"
-    return "\n".join(f"- {html.escape(error[:180])}" for error in errors[-3:])
-
-
-def send_owner_log(
-    client: "TelegramClient",
-    sender: Dict[str, Any],
-    chat: Dict[str, Any],
-    file_name: str,
-    file_size: int,
-    status: str,
-    decryptor_name: str = "",
-    elapsed_ms: Optional[int] = None,
-    errors: tuple[str, ...] = (),
-) -> None:
-    owner_ids = parse_allowed_users(env_text("OWNER_USER_IDS"))
-    if not owner_ids:
-        owner_ids = parse_allowed_users(env_text("ALLOWED_USER_IDS"))
-    if not owner_ids:
-        return
-
-    chat_id = int_value(chat.get("id"))
-    file_mb = file_size / (1024 * 1024) if file_size else 0
-    lines = [
-        "<b>BOT LOG</b>",
-        f"Status: <b>{html.escape(status)}</b>",
-        f"User: {html.escape(sender_label(sender))}",
-        f"Chat: {html.escape(chat_label(chat))}",
-        f"File: <code>{html.escape(file_name)}</code>",
-        f"Size: {file_mb:.2f} MB" if file_size else "Size: unknown",
-    ]
-    if decryptor_name:
-        lines.append(f"Decryptor: <b>{html.escape(decryptor_name)}</b>")
-    if elapsed_ms is not None:
-        lines.append(f"Time: {elapsed_ms} ms")
-    if errors:
-        lines.append("Reason:")
-        lines.append(short_log_errors(errors))
-
-    text = "\n".join(lines)
-    for owner_id in owner_ids:
-        if chat.get("type") == "private" and chat_id == owner_id:
-            continue
-        try:
-            client.send_message(owner_id, text, parse_mode="HTML")
-        except Exception as exc:
-            print(f"owner log failed: {exc}")
-
-
-def remember_copy_text(title: str, text: str, chat_id: int) -> str:
-    key = uuid.uuid4().hex[:16]
-    COPY_CACHE[key] = {
-        "title": title,
-        "text": text,
-        "chat_id": chat_id,
-        "created_at": time.time(),
-    }
-
-    while len(COPY_CACHE) > 80:
-        COPY_CACHE.pop(next(iter(COPY_CACHE)))
-
-    return f"copy:{key}"
-
-
-def copy_button(
-    label: str,
-    text: str,
-    chat_id: int,
-    send_long_text_as_message: bool = True,
-) -> Dict[str, Any]:
-    text = (text or "").strip()
-    if text and len(text) <= 256:
-        return {"text": label, "copy_text": {"text": text}}
-
-    fallback = text or f"{label} not found"
-    if not send_long_text_as_message:
-        return {"text": label, "callback_data": "copy_direct_limit" if text else "copy_missing"}
-
-    return {"text": label, "callback_data": remember_copy_text(label, fallback, chat_id)}
-
-
-def action_result_keyboard(
-    result: str,
-    file_name: str,
-    decryptor_name: str,
-    sender: Dict[str, Any],
-    chat: Dict[str, Any],
-) -> Dict[str, Any]:
-    chat_id = int_value(chat.get("id")) or 0
-    rows: list[list[Dict[str, Any]]] = []
-
-    if can_send_import_links(sender, chat):
-        links = v2ray_links_from_result(result, file_name, decryptor_name)
-        if links:
-            rows.append([copy_button("Copy V2RAY", links[0], chat_id)])
-
-    if can_send_sensitive_fields(sender, chat):
-        fields = preview_fields_from_result(result, decryptor_name)
-        ssh_info = ssh_info_from_result(result, decryptor_name)
-        payload = payload_from_result(result, decryptor_name)
-        sni = clean_action_text(fields.get("sni"), 240)
-        uuid_text = clean_action_text(fields.get("uuid"), 240)
-
-        if ssh_info:
-            rows.append([copy_button("Copy SSH", ssh_info, chat_id)])
-        if payload:
-            rows.append([copy_button("Copy Payload", payload, chat_id)])
-
-        short_fields = []
-        if sni:
-            short_fields.append(copy_button("Copy SNI", sni, chat_id))
-        if uuid_text:
-            short_fields.append(copy_button("Copy UUID", uuid_text, chat_id))
-        if short_fields:
-            rows.append(short_fields)
-
-    if rows:
-        rows.append([copy_button("Copy Note", result_note_from_result(result, file_name, decryptor_name), chat_id), OWNER_BUTTON])
-        return {"inline_keyboard": rows}
-
-    return result_keyboard()
-
-
-def send_copy_text(client: "TelegramClient", chat_id: int, title: str, text: str) -> None:
-    first = True
-    for chunk in chunk_for_html_code(text or " "):
-        heading = f"<b>{html.escape(title)}</b>\n\n" if first else ""
-        client.send_message(
-            chat_id,
-            f"{heading}<code>{html.escape(chunk, quote=False)}</code>",
-            parse_mode="HTML",
-        )
-        first = False
-
-
-class TelegramClient:
-    def __init__(self, token: str):
-        self.api_base = f"https://api.telegram.org/bot{token}"
-        self.file_base = f"https://api.telegram.org/file/bot{token}"
-
-    def call(self, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        response = requests.post(f"{self.api_base}/{method}", json=payload, timeout=30)
-        response.raise_for_status()
-        return response.json()
-
-    def send_message(
-        self,
-        chat_id: int,
-        text: str,
-        parse_mode: str = "",
-        reply_to_message_id: Optional[int] = None,
-        reply_markup: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": True,
-        }
-        if parse_mode:
-            payload["parse_mode"] = parse_mode
-        if reply_to_message_id:
-            payload["reply_to_message_id"] = reply_to_message_id
-            payload["allow_sending_without_reply"] = True
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        return self.call("sendMessage", payload)
-
-    def edit_message(
-        self,
-        chat_id: int,
-        message_id: Optional[int],
-        text: str,
-        reply_markup: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        if not message_id:
-            return
-        payload: Dict[str, Any] = {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": text,
-            "disable_web_page_preview": True,
-        }
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        try:
-            self.call("editMessageText", payload)
-        except Exception as exc:
-            print(f"editMessage failed: {exc}")
-
-    def answer_callback_query(self, callback_query_id: str, text: str, show_alert: bool = False) -> None:
-        self.call(
-            "answerCallbackQuery",
-            {
-                "callback_query_id": callback_query_id,
-                "text": text,
-                "show_alert": show_alert,
-            },
-        )
-
-    def get_bot_label(self) -> str:
-        try:
-            result = self.call("getMe", {})
-            username = result.get("result", {}).get("username")
-            if username:
-                return f"@{username}"
-        except Exception as exc:
-            print(f"getMe failed: {exc}")
-        return "@Decryptor2_bot"
-
-    def get_file_bytes(self, file_id: str) -> bytes:
-        file_info = self.call("getFile", {"file_id": file_id})
-        file_path = file_info.get("result", {}).get("file_path")
-        if not file_path:
-            raise ValueError("Telegram did not return a file path.")
-        response = requests.get(f"{self.file_base}/{file_path}", timeout=60)
-        response.raise_for_status()
-        return response.content
-
-@app.get("/")
-def health():
-    return "Telegram config bot is running."
-
-
-@app.get("/register")
-def register_webhook():
-    setup_secret = env_text("SETUP_SECRET")
-    supplied_key = request.args.get("key", "")
-    if setup_secret and supplied_key != setup_secret:
-        abort(403)
-
-    webhook_url = request.url_root.rstrip("/") + "/webhook"
-    payload: Dict[str, Any] = {
-        "url": webhook_url,
-        "allowed_updates": ["message", "callback_query"],
-        "drop_pending_updates": False,
-    }
-    secret = env_text("WEBHOOK_SECRET")
-    if secret:
-        payload["secret_token"] = secret
-    return jsonify(TelegramClient(bot_token()).call("setWebhook", payload))
-
-
-@app.post("/webhook")
-def webhook():
-    secret = env_text("WEBHOOK_SECRET")
-    if secret and request.headers.get("x-telegram-bot-api-secret-token") != secret:
-        abort(403)
-
-    update = request.get_json(silent=True)
-    if not isinstance(update, dict):
-        abort(400)
-
-    handle_update(update)
-    return "ok"
-
-
-def handle_callback(client: TelegramClient, callback_query: Dict[str, Any]) -> None:
-    query_id = str(callback_query.get("id") or "")
-    data = str(callback_query.get("data") or "")
-    message = callback_query.get("message") or {}
-    chat = message.get("chat") if isinstance(message, dict) else {}
-    chat_id = chat.get("id") if isinstance(chat, dict) else None
-    sender = callback_query.get("from") or {}
-    sender_id = sender.get("id")
-
-    if data == "verify_channel":
-        if not isinstance(sender_id, int):
-            if query_id:
-                client.answer_callback_query(query_id, "Could not identify user.", show_alert=True)
-            return
-
-        if is_owner(sender) or is_channel_member(client, sender_id):
-            if query_id:
-                client.answer_callback_query(query_id, "✅ Verification successful!", show_alert=True)
-            message_id = message.get("message_id") if isinstance(message, dict) else None
-            success_text = (
-                "🎉 <b>Verification Successful!</b>\n\n"
-                "Welcome to the bot! You can now send your config files (.ehi, .hc, .dark, .ssc)."
-            )
-            if message_id and chat_id:
-                client.edit_message(
-                    int(chat_id),
-                    int(message_id),
-                    success_text,
-                    reply_markup=start_keyboard(),
-                )
-            elif chat_id:
-                client.send_message(
-                    int(chat_id),
-                    success_text,
-                    parse_mode="HTML",
-                    reply_markup=start_keyboard(),
-                )
-            return
+def check_websocket_support(domain):
+    res = {"ws_support": False, "status": None, "error": None}
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(REQUEST_TIMEOUT)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        sock = ctx.wrap_socket(sock, server_hostname=domain)
+        sock.connect((domain, 443))
+        req = (f"GET / HTTP/1.1\r\nHost: {domain}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               f"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        sock.send(req.encode())
+        resp = sock.recv(4096).decode(errors="ignore")
+        sock.close()
+        if "101" in resp:
+            res["ws_support"] = True
+            res["status"] = "101 Switching Protocols ✅"
         else:
-            if query_id:
-                client.answer_callback_query(
-                    query_id,
-                    "❌ You have not joined the channel yet! Please join first and click Verify.",
-                    show_alert=True,
-                )
-            return
+            res["status"] = resp.split("\r\n")[0][:60] if resp else "Empty"
+    except Exception as e:
+        res["error"] = str(e)[:50]
+    return res
 
-    if data.startswith("copy:"):
-        item = COPY_CACHE.get(data.split(":", 1)[1])
-        cached_chat_id = int_value(item.get("chat_id")) if isinstance(item, dict) else None
-        if item and chat_id and cached_chat_id == int(chat_id):
-            if query_id:
-                client.answer_callback_query(query_id, "Long text sent below.")
-            send_copy_text(client, int(chat_id), str(item.get("title") or "Copy text"), str(item.get("text") or ""))
-            return
-        if query_id:
-            client.answer_callback_query(query_id, "This button expired. Please send the file again.")
-        return
-
-    if data == "copy_direct_limit":
-        if query_id:
-            client.answer_callback_query(
-                query_id,
-                "Telegram direct copy supports up to 256 characters. This V2Ray link is too long.",
-                show_alert=True,
-            )
-        return
-    if data == "copy_missing":
-        if query_id:
-            client.answer_callback_query(query_id, "Nothing to copy.", show_alert=True)
-        return
-
-    if query_id:
-        client.answer_callback_query(
-            query_id,
-            "Supported: .dark, .ehi, .hc, .ssc" if data == "supported" else "OK",
-        )
-
-    if chat_id and data == "supported":
-        client.send_message(int(chat_id), help_text(), parse_mode="HTML", reply_markup=start_keyboard())
-
-
-def handle_update(update: Dict[str, Any]) -> None:
-    client = TelegramClient(bot_token())
-
-    callback_query = update.get("callback_query")
-    if isinstance(callback_query, dict):
-        handle_callback(client, callback_query)
-        return
-
-    message = update.get("message")
-    if not isinstance(message, dict):
-        return
-
-    chat = message.get("chat") or {}
-    chat_id = chat.get("id")
-    if chat_id is None:
-        return
-
-    text = message.get("text") or ""
-    command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text.startswith("/") else ""
-    document = find_document(message)
-    if not command and not document:
-        return
-
-    sender = message.get("from") or {}
-    allowed_users = parse_allowed_users(env_text("ALLOWED_USER_IDS"))
-    if allowed_users and sender.get("id") not in allowed_users:
-        client.send_message(int(chat_id), "Sorry, this bot is private.")
-        return
-
-    # Check Channel Membership (Owner bypasses)
-    sender_id = sender.get("id")
-    if isinstance(sender_id, int) and not is_owner(sender):
-        if not is_channel_member(client, sender_id):
-            client.send_message(
-                int(chat_id),
-                verify_required_message(),
-                parse_mode="HTML",
-                reply_markup=verify_keyboard(),
-            )
-            return
-
-    if command == "/start" or command == "/help":
-        client.send_message(int(chat_id), help_text(), parse_mode="HTML", reply_markup=start_keyboard())
-        return
-    if command == "/id":
-        user_id = sender.get("id") or "unknown"
-        client.send_message(int(chat_id), f"Your Telegram ID: {user_id}")
-        return
-    if command == "/chatid":
-        client.send_message(int(chat_id), full_output_status_line(sender, chat))
-        return
-    if command in {"/allowgroup", "/denygroup"}:
-        client.send_message(int(chat_id), "Full output is already enabled for everyone.")
-        return
-    if command == "/fullstatus":
-        client.send_message(int(chat_id), full_output_status_line(sender, chat))
-        return
-    if command == "/stats":
-        client.send_message(int(chat_id), "The stats feature is currently disabled.")
-        return
-
-    if not document:
-        return
-
-    sender_id = sender.get("id")
-    if isinstance(sender_id, int):
-        spam_window = parse_positive_int(env_text("SPAM_WINDOW_SECONDS"), DEFAULT_SPAM_WINDOW_SECONDS)
-        now = time.time()
-        wait_for = int(spam_window - (now - LAST_USER_ACTION.get(sender_id, 0)))
-        if wait_for > 0:
-            client.send_message(int(chat_id), f"Please wait {wait_for}s before sending the next file.")
-            return
-        LAST_USER_ACTION[sender_id] = now
-
-    file_name = document.get("file_name") or "telegram_config"
-    file_size = int(document.get("file_size") or 0)
-    max_file_size = int(env_text("MAX_FILE_SIZE", str(DEFAULT_MAX_FILE_SIZE)))
-    reply_to_message_id = message.get("message_id")
-
-    if file_size and file_size > max_file_size:
-        send_owner_log(
-            client,
-            sender,
-            chat,
-            file_name,
-            file_size,
-            "REJECTED: TOO LARGE",
-        )
-        client.send_message(
-            int(chat_id),
-            f"This file is too large. Limit: {max_file_size // (1024 * 1024)} MB.",
-            reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
-            reply_markup=result_keyboard(),
-        )
-        return
-
-    if is_npv_file(file_name):
-        send_owner_log(
-            client,
-            sender,
-            chat,
-            file_name,
-            file_size,
-            "REJECTED: NPV DISABLED",
-        )
-        client.send_message(
-            int(chat_id),
-            fail_message(file_name, None, ()),
-            reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
-            reply_markup=result_keyboard(),
-        )
-        return
-
-    detected = decryptor_for_file(file_name)
-    processing = client.send_message(
-        int(chat_id),
-        f"Unlocking {detected['name']} config..." if detected else "Unlocking config...",
-        reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
-    )
-    processing_message_id = processing.get("result", {}).get("message_id")
-
+def check_tls_info(domain):
+    res = {"tls_version": None, "cipher": None, "cert_issuer": None, "cert_subject": None, "error": None}
     try:
-        file_bytes = client.get_file_bytes(document["file_id"])
-        digest = file_digest(file_bytes)
-        duplicate_window = parse_positive_int(
-            env_text("DUPLICATE_WINDOW_SECONDS"),
-            DEFAULT_DUPLICATE_WINDOW_SECONDS,
-        )
-        duplicate = recent_duplicate_record(sender.get("id"), chat_id, digest, duplicate_window)
-        if duplicate:
-            client.edit_message(
-                int(chat_id),
-                processing_message_id,
-                duplicate_file_message(duplicate),
-                reply_markup=result_keyboard(),
-            )
-            return
-        started_at = time.perf_counter()
-        decryptor_name, result, errors, detected_name = run_decryptors(file_bytes, file_name)
-        elapsed_ms = max(1, int((time.perf_counter() - started_at) * 1000))
-    except Exception as exc:
-        send_owner_log(
-            client,
-            sender,
-            chat,
-            file_name,
-            file_size,
-            "ERROR",
-            errors=(str(exc),),
-        )
-        client.edit_message(
-            int(chat_id),
-            processing_message_id,
-            f"Could not process this file: {exc}",
-            reply_markup=result_keyboard(),
-        )
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((domain, 443), timeout=REQUEST_TIMEOUT) as sock:
+            with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
+                res["tls_version"] = ssock.version()
+                res["cipher"] = ssock.cipher()[0] if ssock.cipher() else None
+    except Exception as e:
+        res["error"] = str(e)[:50]
+    return res
+
+def reverse_ip_lookup(ip):
+    domains = set()
+    try:
+        r = requests.get(f"https://api.hackertarget.com/reverseiplookup/?q={ip}", timeout=10)
+        if r.status_code == 200 and "error" not in r.text.lower():
+            for line in r.text.strip().split("\n"):
+                if line and "." in line: domains.add(line.strip().lower())
+    except: pass
+    return {"ip": ip, "domains": list(domains)}
+
+def classify_domain(domain):
+    domain = domain.lower()
+    for sd in SOCIAL_DOMAINS:
+        if domain.endswith(sd): return "📱 Social"
+    for sd in CHAT_DOMAINS:
+        if domain.endswith(sd): return "💬 Chat/IM"
+    for sd in VIDEO_DOMAINS:
+        if domain.endswith(sd): return "📺 Video"
+    for sd in GAMING_DOMAINS:
+        if domain.endswith(sd): return "🎮 Gaming"
+    return "🌐 General"
+
+def full_domain_scan(domain):
+    return {
+        "domain": domain,
+        "http": check_http_status(domain),
+        "ws": check_websocket_support(domain),
+        "tls": check_tls_info(domain),
+        "category": classify_domain(domain)
+    }
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TELEGRAM HANDLERS
+# ══════════════════════════════════════════════════════════════════════════════
+def is_admin(m):
+    if m.from_user.id in ADMIN_IDS: return True
+    bot.reply_to(m, "⛔ Access Denied.")
+    return False
+
+def main_keyboard():
+    mk = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    mk.add("🔍 Subdomain Finder", "🌐 Reverse IP Lookup", "⚡ SNI / Bug Checker")
+    return mk
+
+@bot.message_handler(commands=["start", "help"])
+def handle_start(message):
+    if not is_admin(message): return
+    bot.send_message(message.chat.id, f"🔍 <b>Domain Finder & Bug Hunter Bot v{VERSION}</b>\n\nChoose an option below:", reply_markup=main_keyboard())
+
+@bot.message_handler(func=lambda m: m.text == "🔍 Subdomain Finder")
+def handle_find_prompt(message):
+    if not is_admin(message): return
+    bot.send_message(message.chat.id, "Enter the root domain (e.g. robi.com.bd):", reply_markup=types.ForceReply())
+
+@bot.message_handler(func=lambda m: getattr(m.reply_to_message, 'text', '').startswith('Enter the root domain'))
+def handle_find_reply(message):
+    if not is_admin(message): return
+    domain = message.text.strip().lower()
+    msg = bot.send_message(message.chat.id, f"🔍 Scanning <code>{domain}</code>...")
+    
+    subs = set()
+    subs.update(find_subdomains_crtsh(domain))
+    subs.update(find_subdomains_hackertarget(domain))
+    subs.update(find_subdomains_rapiddns(domain))
+    
+    if not subs:
+        bot.edit_message_text(f"❌ No subdomains found for {domain}", message.chat.id, msg.message_id)
         return
+        
+    bot.edit_message_text(f"🔍 Found {len(subs)} subdomains! Checking DNS...", message.chat.id, msg.message_id)
+    
+    live = []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        for res in as_completed([pool.submit(check_domain_live, s) for s in subs]):
+            if res.result()["live"]: live.append(res.result())
+            
+    text = f"📊 <b>Total: {len(subs)} | Live: {len(live)}</b>\n\n"
+    for idx, s in enumerate(live[:30], 1):
+        text += f"{idx}. <code>{s['domain']}</code> ({classify_domain(s['domain'])})\n"
+        
+    if len(live) > 30: text += f"\n<i>...and {len(live)-30} more (see file)</i>"
+    bot.edit_message_text(text, message.chat.id, msg.message_id)
+    
+    if live:
+        file_content = f"# Live Subdomains for {domain}\n" + "\n".join(s['domain'] for s in live)
+        doc = BytesIO(file_content.encode())
+        doc.name = f"{domain}_live.txt"
+        bot.send_document(message.chat.id, doc)
 
-    if not result or not decryptor_name:
-        send_owner_log(
-            client,
-            sender,
-            chat,
-            file_name,
-            file_size,
-            "FAILED",
-            detected_name or "",
-            elapsed_ms,
-            errors,
-        )
-        client.edit_message(
-            int(chat_id),
-            processing_message_id,
-            fail_message(file_name, detected_name, errors),
-            reply_markup=result_keyboard(),
-        )
+@bot.message_handler(func=lambda m: m.text == "⚡ SNI / Bug Checker")
+def handle_check_prompt(message):
+    if not is_admin(message): return
+    bot.send_message(message.chat.id, "Enter domain for full SNI/Bug check:", reply_markup=types.ForceReply())
+
+@bot.message_handler(func=lambda m: getattr(m.reply_to_message, 'text', '').startswith('Enter domain for full SNI'))
+def handle_check_reply(message):
+    if not is_admin(message): return
+    domain = message.text.strip().lower()
+    msg = bot.send_message(message.chat.id, f"⚡ Checking <code>{domain}</code>...")
+    
+    scan = full_domain_scan(domain)
+    
+    text = f"⚡ <b>SNI SCAN: {domain}</b>\n"
+    text += f"🏷 Category: {scan['category']}\n\n"
+    
+    h = scan["http"]
+    text += f"🌐 HTTP: {h['status_code']} | Server: {h['server']}\n"
+    if h.get("cdn"): text += f"   CDN: {h['cdn']}\n"
+    
+    w = scan["ws"]
+    text += f"🔗 WS: {'✅ 101 OK' if w['ws_support'] else ('❌ ' + str(w['status']))}\n"
+    
+    bot.edit_message_text(text, message.chat.id, msg.message_id)
+
+@bot.message_handler(func=lambda m: m.text == "🌐 Reverse IP Lookup")
+def handle_reverse_prompt(message):
+    if not is_admin(message): return
+    bot.send_message(message.chat.id, "Enter IP Address:", reply_markup=types.ForceReply())
+
+@bot.message_handler(func=lambda m: getattr(m.reply_to_message, 'text', '').startswith('Enter IP Address'))
+def handle_reverse_reply(message):
+    if not is_admin(message): return
+    ip = message.text.strip()
+    msg = bot.send_message(message.chat.id, f"🌐 Reverse IP scanning <code>{ip}</code>...")
+    
+    res = reverse_ip_lookup(ip)
+    doms = res["domains"]
+    
+    if not doms:
+        bot.edit_message_text(f"❌ No domains found on {ip}", message.chat.id, msg.message_id)
         return
+        
+    text = f"🌐 <b>REVERSE IP: {ip}</b>\n📋 Found: {len(doms)}\n\n"
+    for i, d in enumerate(doms[:30], 1): text += f"{i}. <code>{d}</code>\n"
+    
+    bot.edit_message_text(text, message.chat.id, msg.message_id)
 
-    preview = important_preview(
-        result,
-        decryptor_name,
-        can_send_sensitive_fields(sender, chat),
-    )
-    ready_links = v2ray_links_from_result(result, file_name, decryptor_name) if can_send_import_links(sender, chat) else []
-    client.send_message(
-        int(chat_id),
-        designed_message(
-            decryptor_title(decryptor_name),
-            requester_link(sender),
-            client.get_bot_label(),
-            elapsed_ms,
-            preview,
-            decryptor_name == "HTTP Injector",
-            ready_links,
-        ),
-        parse_mode="HTML",
-        reply_to_message_id=int(reply_to_message_id) if reply_to_message_id else None,
-        reply_markup=action_result_keyboard(result, file_name, decryptor_name, sender, chat),
-    )
-    remember_successful_file(
-        sender.get("id"),
-        chat_id,
-        digest,
-        file_name,
-        decryptor_name,
-        duplicate_window,
-    )
-    send_owner_log(
-        client,
-        sender,
-        chat,
-        file_name,
-        file_size,
-        "SUCCESS",
-        decryptor_name,
-        elapsed_ms,
-    )
-    client.edit_message(int(chat_id), processing_message_id, f"Done | {decryptor_name} | {elapsed_ms}ms")
+# ══════════════════════════════════════════════════════════════════════════════
+#  FLASK SERVER & WEBHOOK
+# ══════════════════════════════════════════════════════════════════════════════
 
+@app.route("/", methods=["GET", "HEAD"])
+def index():
+    return "Bot is running!", 200
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    if request.headers.get("content-type") == "application/json":
+        json_string = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "", 200
+    return "error", 403
+
+def setup_webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+    log.info(f"Webhook set to {WEBHOOK_URL}/webhook")
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "10000"))
+    import urllib3
+    urllib3.disable_warnings()
+    setup_webhook()
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
